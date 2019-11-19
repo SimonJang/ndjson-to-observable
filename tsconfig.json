@@ -1,0 +1,24 @@
+{
+    "compilerOptions": {
+        "target": "es2016",
+        "module": "commonjs",
+        "declaration": true,
+        "removeComments": true,
+        "pretty": true,
+        "allowUnreachableCode": false,
+        "allowUnusedLabels": false,
+        "noImplicitAny": false,
+        "noImplicitReturns": true,
+        "noImplicitUseStrict": false,
+        "noFallthroughCasesInSwitch": true,
+        "allowSyntheticDefaultImports": true,
+        "strictNullChecks": true,
+		"outDir": "lib",
+		"strict": true
+    },
+    "exclude": [
+		"node_modules",
+		"source/test",
+    "lib"
+	]
+}

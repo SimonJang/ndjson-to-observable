@@ -1,0 +1,6 @@
+{
+	"extends": ["tslint-xo", "tslint-config-prettier"],
+	"rules": {
+		"no-unsafe-any": false
+	}
+}
