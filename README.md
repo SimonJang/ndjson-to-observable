@@ -17,10 +17,11 @@ $ npm install ndjson-to-observable
 
 ```js
 import * as fs from 'fs';
+import * as path from 'path'
 import ndjsonToObservable from 'ndjson-to-observable';
 import {tap} from 'rxjs/operators'
 
-const stream = fs.createReadStream(join(__dirname, 'test.json'));
+const stream = fs.createReadStream(path.join(__dirname, 'test.json'));
 
 ndjsonToObservable(stream)
 	.pipe(
@@ -38,4 +39,4 @@ ndjsonToObservable(stream)
 
 Type: `ReadableStream`
 
-Stream of [NDJSON](http://ndjson.org/) records. Could be from a file or generated yourself.
+Stream of [NDJSON](http://ndjson.org/) records. Could be from a file or generated ad hoc.
