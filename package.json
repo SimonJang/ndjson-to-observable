@@ -1,6 +1,6 @@
 {
 	"name": "ndjson-to-observable",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Create an observable stream from a ndjson stream",
 	"repository": "https://github.com/SimonJang/ndjson-to-observable",
 	"main": "lib/index.js",
