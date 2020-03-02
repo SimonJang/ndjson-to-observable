@@ -4,6 +4,11 @@ import test from 'ava';
 import { tap, bufferCount } from 'rxjs/operators';
 import { ndjsonToObservable } from '../index';
 
+interface User {
+	firstName: string;
+	name: string;
+}
+
 const data = [
 	{
 		firstName: 'Bob',
@@ -24,7 +29,7 @@ test('should create an observable stream', async t => {
 
 	let counter = 0;
 
-	const result = await ndjsonToObservable(ndjsonStream)
+	const result = await ndjsonToObservable<User>(ndjsonStream)
 		.pipe(
 			tap(record => {
 				t.is(record.firstName, data[counter].firstName);

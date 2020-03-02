@@ -35,6 +35,6 @@ export const streamToObservable = <T>(stream: ReadStream): Observable<T> => {
  *
  * @param stream - NDJSON read stream
  */
-export const ndjsonToObservable = <T extends JsonObject = JsonObject>(stream: ReadStream): Observable<T> => {
+export const ndjsonToObservable = <T  = unknown>(stream: ReadStream): Observable<T> => {
 	return streamToObservable(stream.pipe(stripBOM()).pipe(split(/(?<=})\n(?={)/, JSON.parse)))
 }
