@@ -22,7 +22,7 @@ const data = [
 		firstName: 'Malcolm',
 		name: 'John'
 	}
-]
+];
 
 test('should create an observable stream', async t => {
 	const ndjsonStream = fs.createReadStream(join(__dirname, 'data.json'));
@@ -33,7 +33,7 @@ test('should create an observable stream', async t => {
 		.pipe(
 			tap(record => {
 				t.is(record.firstName, data[counter].firstName);
-				t.is(record.name, data[counter].name)
+				t.is(record.name, data[counter].name);
 
 				counter++;
 			}),
