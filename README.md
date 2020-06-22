@@ -1,4 +1,4 @@
-# ndjson-to-observable [![Build Status](https://travis-ci.org/SimonJang/ndjson-to-observable.svg?branch=master)](https://travis-ci.org/SimonJang/ndjson-to-observable)
+# ndjson-to-observable ![CI](https://github.com/SimonJang/ndjson-to-observable/workflows/CI/badge.svg?branch=master)
 
 Transform a NDJSON stream to an [RxJS](https://www.npmjs.com/package/rxjs) observable stream.
 
