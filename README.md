@@ -18,7 +18,7 @@ $ npm install ndjson-to-observable
 ```js
 import * as fs from 'fs';
 import * as path from 'path'
-import ndjsonToObservable from 'ndjson-to-observable';
+import {ndjsonToObservable} from 'ndjson-to-observable';
 import {tap} from 'rxjs/operators'
 
 const stream = fs.createReadStream(path.join(__dirname, 'test.json'));
