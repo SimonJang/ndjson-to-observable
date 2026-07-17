@@ -1,0 +1,14 @@
+{
+	"compilerOptions": {
+		"module": "commonjs",
+		"moduleResolution": "node",
+		"noEmit": true,
+		"strict": true,
+		"target": "ES2017",
+		"types": []
+	},
+	"files": [
+		"test/legacy-node.d.ts",
+		"test/types.ts"
+	]
+}

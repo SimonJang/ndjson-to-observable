@@ -1,29 +1,74 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
-  main:
+  test:
     name: Test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     strategy:
+      fail-fast: false
       matrix:
-        node: [8, 10, 12, 14]
+        node: [22.x, 24.x, 26.x]
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v1
+      - name: Checkout repository
+        uses: actions/checkout@v7
 
-      - name: Use Node ${{ matrix.node }}
-        uses: actions/setup-node@v1
+      - name: Use Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
 
-      - name: Install NPM dependencies
+      - name: Use npm 12.0.1
+        run: npm install --global npm@12.0.1
+
+      - name: Install dependencies
         run: npm ci
 
-      - name: Run unit tests
+      - name: Run tests
         run: npm test
-        env:
-          CI: true
+
+      - name: Inspect package contents
+        run: npm pack --dry-run
+
+  legacy-runtime:
+    name: Legacy runtime (Node 8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Use npm 12.0.1
+        run: npm install --global npm@12.0.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build package
+        run: npm run build
+
+      - name: Use Node.js 8
+        uses: actions/setup-node@v7
+        with:
+          node-version: 8.x
+          package-manager-cache: false
+
+      - name: Run built-artifact smoke test
+        run: node test/legacy-smoke.js
