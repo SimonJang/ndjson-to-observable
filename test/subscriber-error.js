@@ -11,6 +11,7 @@ const failure = new Error('subscriber failed');
 const values = [];
 const errors = [];
 let verified = false;
+let uncaughtObserved = false;
 let throwing;
 
 const healthy = observable.subscribe({
@@ -41,6 +42,7 @@ throwing = observable.subscribe(new ThrowingSubscriber());
 
 const onUncaughtException = error => {
 	assert.equal(error, failure);
+	uncaughtObserved = true;
 };
 
 process.on('uncaughtException', onUncaughtException);
@@ -49,6 +51,7 @@ process.on('beforeExit', () => {
 	assert.deepEqual(values, [100]);
 	assert.deepEqual(errors, []);
 	assert.equal(verified, true);
+	assert.equal(uncaughtObserved, true);
 });
 
 input.write('100\n');

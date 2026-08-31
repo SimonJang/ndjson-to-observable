@@ -13,10 +13,15 @@ const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'ndjson-to-obse
 const run = (command, args, cwd) => {
 	const result = spawnSync(command, args, {
 		cwd,
-		encoding: 'utf8'
+		encoding: 'utf8',
+		timeout: 120000
 	});
 
-	assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join('\n'));
+	assert.equal(result.status, 0, [
+		result.error && result.error.stack,
+		result.stdout,
+		result.stderr
+	].filter(Boolean).join('\n'));
 	return result.stdout;
 };
 

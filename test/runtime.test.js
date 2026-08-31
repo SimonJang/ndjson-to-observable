@@ -22,10 +22,16 @@ const collect = observable => new Promise((resolve, reject) => {
 
 const assertProcessFixture = filename => {
 	const result = spawnSync(process.execPath, [path.join(__dirname, filename)], {
-		encoding: 'utf8'
+		encoding: 'utf8',
+		timeout: 2000
 	});
 
-	assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join('\n'));
+	assert.equal(result.status, 0, [
+		result.stdout,
+		result.stderr,
+		result.error && result.error.stack,
+		result.signal
+	].filter(Boolean).join('\n'));
 };
 
 test('does not read the source before the first subscription', async () => {
@@ -271,6 +277,61 @@ test('retains a pending destroy error before the first subscription', async () =
 	assert.equal(input.listenerCount('close'), 0);
 });
 
+test('retains a delayed destroy error that started before construction', async () => {
+	const failure = new Error('delayed destroy failed');
+	class DelayedDestroyReadable extends Readable {
+		_read() {}
+
+		_destroy(error, callback) {
+			setTimeout(() => callback(failure), 25);
+		}
+	}
+	const input = new DelayedDestroyReadable();
+
+	input.destroy();
+	const observable = ndjsonToObservable(input);
+
+	await assert.rejects(collect(observable), error => error === failure);
+
+	let lateError;
+	observable.subscribe({error: error => { lateError = error; }});
+	assert.equal(lateError, failure);
+});
+
+test('source error beats reentrant final cancellation', async () => {
+	const input = new PassThrough();
+	const failure = new Error('source failed');
+	let subscription;
+
+	input.once('error', () => subscription.unsubscribe());
+	const observable = ndjsonToObservable(input);
+	subscription = observable.subscribe({error() {}});
+	input.destroy(failure);
+	await new Promise(resolve => setImmediate(resolve));
+
+	let lateError;
+	observable.subscribe({error: error => { lateError = error; }});
+	assert.equal(lateError, failure);
+});
+
+test('premature close beats reentrant final cancellation', async () => {
+	const input = new PassThrough();
+	let subscription;
+
+	input.once('close', () => subscription.unsubscribe());
+	const observable = ndjsonToObservable(input);
+	subscription = observable.subscribe({error() {}});
+	input.destroy();
+
+	const lateError = await new Promise((resolve, reject) => {
+		observable.subscribe({
+			error: resolve,
+			complete: () => reject(new Error('premature close completed'))
+		});
+	});
+	assert.match(lateError.message, /closed before ending/i);
+});
+
 test('errors current and late subscribers when the source closes prematurely', async () => {
 	const input = new PassThrough();
 	const observable = ndjsonToObservable(input);
@@ -305,6 +366,7 @@ test('errors current and late subscribers when the source closes prematurely', a
 	let lateError;
 	observable.subscribe({error: received => { lateError = received; }});
 	assert.equal(lateError, error);
+	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(input.listenerCount('error'), 0);
 	assert.equal(input.listenerCount('end'), 0);
 	assert.equal(input.listenerCount('close'), 0);
@@ -337,6 +399,265 @@ test('retains a premature close that happened before observable construction', a
 	assert.equal(input.listenerCount('close'), 0);
 });
 
+test('does not treat destroy-produced EOF as successful completion', async () => {
+	class EofOnDestroyReadable extends Readable {
+		_read() {}
+
+		_destroy(error, callback) {
+			this.push(null);
+			process.nextTick(callback, error);
+		}
+	}
+
+	const input = new EofOnDestroyReadable();
+
+	input.destroy();
+	const observable = ndjsonToObservable(input);
+
+	await assert.rejects(collect(observable), /closed before ending/i);
+
+	let lateError;
+	observable.subscribe({error: error => { lateError = error; }});
+	assert.match(lateError.message, /closed before ending/i);
+});
+
+test('does not emit buffered records after premature termination starts', async () => {
+	class EofOnDestroyReadable extends Readable {
+		_read() {}
+
+		_destroy(error, callback) {
+			this.push(null);
+			process.nextTick(callback, error);
+		}
+	}
+	const input = new EofOnDestroyReadable();
+	const observable = ndjsonToObservable(input);
+	const values = [];
+	const terminal = new Promise((resolve, reject) => {
+		observable.subscribe({
+			next(value) {
+				values.push(value);
+				input.destroy();
+			},
+			error: resolve,
+			complete: () => reject(new Error('premature termination completed'))
+		});
+	});
+
+	input.push('100\n2');
+	await Promise.race([
+		terminal,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('premature termination hung')), 100))
+	]);
+
+	assert.deepEqual(values, [100]);
+});
+
+test('does not emit buffered records after destroy with an error starts', async () => {
+	const input = new PassThrough();
+	const failure = new Error('source failed');
+	const values = [];
+	const terminal = new Promise((resolve, reject) => {
+		ndjsonToObservable(input).subscribe({
+			next(value) {
+				values.push(value);
+				input.destroy(failure);
+			},
+			error: resolve,
+			complete: () => reject(new Error('source error completed'))
+		});
+	});
+
+	input.write('100\n2\n3\n');
+	const error = await Promise.race([
+		terminal,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('source error hung')), 100))
+	]);
+
+	assert.equal(error, failure);
+	assert.deepEqual(values, [100]);
+});
+
+test('errors when an active source is quietly destroyed before EOF', async () => {
+	const input = new Readable({
+		emitClose: false,
+		read() {}
+	});
+	const observable = ndjsonToObservable(input);
+	const terminal = new Promise((resolve, reject) => {
+		observable.subscribe({
+			error: resolve,
+			complete: () => reject(new Error('quiet destroy completed'))
+		});
+	});
+
+	input.destroy();
+	const error = await Promise.race([
+		terminal,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('quiet destroy hung')), 100))
+	]);
+
+	assert.match(error.message, /closed before ending/i);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('detects quiet destruction when the source destroy hook cannot be wrapped', () => {
+	assertProcessFixture('quiet-destroy-unwrapped.js');
+});
+
+test('detects quiet destruction when public destroy cannot be wrapped', () => {
+	assertProcessFixture('quiet-destroy-unwrapped-public.js');
+});
+
+test('detects quiet destruction when neither destroy hook can be wrapped', () => {
+	assertProcessFixture('quiet-destroy-unwrapped-both.js');
+});
+
+test('detects quiet destruction after public destroy is replaced', async () => {
+	const input = new Readable({
+		emitClose: false,
+		read() {}
+	});
+	const originalDestroy = input.destroy;
+
+	Object.defineProperty(input, '_destroy', {
+		configurable: false,
+		value: input._destroy,
+		writable: false
+	});
+	const observable = ndjsonToObservable(input);
+
+	input.destroy = function (error, ignoredCallback) {
+		void ignoredCallback;
+		return originalDestroy.call(this, error);
+	};
+
+	const terminal = new Promise((resolve, reject) => {
+		observable.subscribe({
+			error: resolve,
+			complete: () => reject(new Error('quiet destroy completed'))
+		});
+	});
+
+	input.destroy();
+	const error = await Promise.race([
+		terminal,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('quiet destroy hung')), 100))
+	]);
+
+	assert.match(error.message, /closed before ending/i);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('detects quiet destruction when a public destroy override ignores its callback', async () => {
+	const input = new Readable({
+		emitClose: false,
+		read() {}
+	});
+	const originalDestroy = input.destroy;
+
+	Object.defineProperty(input, '_destroy', {
+		configurable: false,
+		value: input._destroy,
+		writable: false
+	});
+	input.destroy = function (error, ignoredCallback) {
+		void ignoredCallback;
+		return originalDestroy.call(this, error);
+	};
+
+	const observable = ndjsonToObservable(input);
+	const terminal = new Promise((resolve, reject) => {
+		observable.subscribe({
+			error: resolve,
+			complete: () => reject(new Error('quiet destroy completed'))
+		});
+	});
+
+	input.destroy();
+	const error = await Promise.race([
+		terminal,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('quiet destroy hung')), 100))
+	]);
+
+	assert.match(error.message, /closed before ending/i);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('detects quiet destruction after the source destroy hook is replaced', async () => {
+	const input = new Readable({
+		emitClose: false,
+		read() {}
+	});
+	const observable = ndjsonToObservable(input);
+
+	input._destroy = function (error, callback) {
+		callback(error);
+	};
+
+	const terminal = new Promise((resolve, reject) => {
+		observable.subscribe({
+			error: resolve,
+			complete: () => reject(new Error('quiet destroy completed'))
+		});
+	});
+
+	input.destroy();
+	const error = await Promise.race([
+		terminal,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('quiet destroy hung')), 100))
+	]);
+
+	assert.match(error.message, /closed before ending/i);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('detects quiet destruction after both destroy hooks are replaced', async () => {
+	const input = new Readable({
+		emitClose: false,
+		read() {}
+	});
+	const originalDestroy = input.destroy;
+	const originalInternalDestroy = input._destroy;
+	const observable = ndjsonToObservable(input);
+
+	input.destroy = function (error) {
+		return originalDestroy.call(this, error);
+	};
+	input._destroy = function (error, callback) {
+		return originalInternalDestroy.call(this, error, callback);
+	};
+
+	const terminal = new Promise((resolve, reject) => {
+		observable.subscribe({
+			error: resolve,
+			complete: () => reject(new Error('quiet destroy completed'))
+		});
+	});
+
+	input.destroy();
+	const error = await Promise.race([
+		terminal,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('quiet destroy hung')), 100))
+	]);
+
+	assert.match(error.message, /closed before ending/i);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
 test('does not retain listeners when the source ended and closed before construction', async () => {
 	const input = Readable.from(['{"id":1}']);
 	await new Promise((resolve, reject) => {
@@ -360,6 +681,80 @@ test('does not retain listeners when the source ended and closed before construc
 	assert.equal(input.listenerCount('close'), 0);
 });
 
+test('does not retain listeners when an already-ended source is never subscribed', async () => {
+	const input = Readable.from(['1']);
+	await new Promise((resolve, reject) => {
+		const onClose = () => {
+			input.removeListener('error', reject);
+			resolve();
+		};
+
+		input.once('error', reject);
+		input.once('close', onClose);
+		input.resume();
+	});
+
+	const observable = ndjsonToObservable(input);
+
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+
+	let lateCompleted = false;
+	observable.subscribe({complete: () => { lateCompleted = true; }});
+	assert.equal(lateCompleted, true);
+});
+
+test('retains completion when a source ends before the first subscription', async () => {
+	const input = Readable.from(['1']);
+	const observable = ndjsonToObservable(input);
+
+	await new Promise((resolve, reject) => {
+		const onClose = () => {
+			input.removeListener('error', reject);
+			resolve();
+		};
+
+		input.once('error', reject);
+		input.once('close', onClose);
+		input.resume();
+	});
+
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+
+	let lateCompleted = false;
+	observable.subscribe({complete: () => { lateCompleted = true; }});
+	assert.equal(lateCompleted, true);
+});
+
+test('restores source lifecycle hooks after two adapters complete', async () => {
+	const input = new Readable({
+		autoDestroy: false,
+		read() {}
+	});
+	const hadOwnDestroy = Object.prototype.hasOwnProperty.call(input, 'destroy');
+	const hadOwnInternalDestroy = Object.prototype.hasOwnProperty.call(input, '_destroy');
+	const originalDestroy = input.destroy;
+	const originalInternalDestroy = input._destroy;
+	const first = collect(ndjsonToObservable(input));
+	const second = collect(ndjsonToObservable(input));
+
+	input.push('1\n');
+	input.push(null);
+
+	assert.deepEqual(await first, [1]);
+	assert.deepEqual(await second, [1]);
+	assert.equal(input.destroy, originalDestroy);
+	assert.equal(input._destroy, originalInternalDestroy);
+	assert.equal(Object.prototype.hasOwnProperty.call(input, 'destroy'), hadOwnDestroy);
+	assert.equal(Object.prototype.hasOwnProperty.call(input, '_destroy'), hadOwnInternalDestroy);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
 test('does not misclassify normal source end and close as premature', async () => {
 	const input = Readable.from(['{"id":1}']);
 
@@ -369,8 +764,47 @@ test('does not misclassify normal source end and close as premature', async () =
 	assert.equal(input.listenerCount('close'), 0);
 });
 
+test('removes source listeners after successful end without close', async () => {
+	const input = new Readable({
+		autoDestroy: false,
+		read() {
+			this.push('1\n');
+			this.push(null);
+		}
+	});
+
+	assert.deepEqual(await collect(ndjsonToObservable(input)), [1]);
+	assert.equal(input.destroyed, false);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('removes source listeners after successful auto-destroy without close', async () => {
+	const input = new Readable({
+		autoDestroy: true,
+		emitClose: false,
+		read() {
+			this.push('1\n');
+			this.push(null);
+		}
+	});
+
+	assert.deepEqual(await collect(ndjsonToObservable(input)), [1]);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(input.destroyed, true);
+	assert.equal(input.closed, true);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
 test('absorbs a delayed source destroy error after observable completion', () => {
 	assertProcessFixture('delayed-source-error.js');
+});
+
+test('absorbs a delayed destroy error when close events are disabled', () => {
+	assertProcessFixture('delayed-source-error-no-close.js');
 });
 
 test('absorbs deferred and arbitrarily late private transform errors', () => {
@@ -387,6 +821,53 @@ test('destroys the source when the final subscriber cancels', async () => {
 	assert.equal(input.destroyed, true);
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(input.listenerCount('error'), 0);
+
+	let lateCompleted = false;
+	observable.subscribe({complete: () => { lateCompleted = true; }});
+	assert.equal(lateCompleted, true);
+});
+
+test('removes source listeners after final cancellation without close', async () => {
+	const input = new Readable({
+		emitClose: false,
+		read() {}
+	});
+	const observable = ndjsonToObservable(input);
+	const subscription = observable.subscribe();
+
+	subscription.unsubscribe();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(input.destroyed, true);
+	assert.equal(input.closed, true);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+
+	let lateCompleted = false;
+	observable.subscribe({complete: () => { lateCompleted = true; }});
+	assert.equal(lateCompleted, true);
+});
+
+test('removes source listeners after final cancellation with an unwrappable destroy hook', async () => {
+	const input = new Readable({
+		emitClose: false,
+		read() {}
+	});
+
+	Object.defineProperty(input, '_destroy', {
+		configurable: false,
+		value: input._destroy,
+		writable: false
+	});
+
+	const observable = ndjsonToObservable(input);
+	const subscription = observable.subscribe();
+
+	subscription.unsubscribe();
+	await new Promise(resolve => setTimeout(resolve, 25));
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
 
 	let lateCompleted = false;
 	observable.subscribe({complete: () => { lateCompleted = true; }});
@@ -427,4 +908,43 @@ test('keeps a shared source alive until the final active subscriber leaves', asy
 	let lateCompleted = false;
 	observable.subscribe({complete: () => { lateCompleted = true; }});
 	assert.equal(lateCompleted, true);
+});
+
+test('does not replay earlier values to subscribers that join an active stream', async () => {
+	const input = new PassThrough();
+	const observable = ndjsonToObservable(input);
+	const firstValues = [];
+	const secondValues = [];
+	let resolveFirstValue;
+	const firstValue = new Promise(resolve => { resolveFirstValue = resolve; });
+	const first = observable.subscribe(value => {
+		firstValues.push(value);
+		resolveFirstValue();
+	});
+
+	input.write('100\n');
+	await Promise.race([
+		firstValue,
+		new Promise((resolve, reject) => setTimeout(() => reject(new Error('first value hung')), 100))
+	]);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(firstValues, [100]);
+
+	const secondComplete = new Promise((resolve, reject) => {
+		observable.subscribe({
+			next(value) {
+				secondValues.push(value);
+			},
+			error: reject,
+			complete: resolve
+		});
+	});
+
+	input.write('2\n');
+	input.end();
+	await secondComplete;
+	first.unsubscribe();
+
+	assert.deepEqual(firstValues, [100, 2]);
+	assert.deepEqual(secondValues, [2]);
 });

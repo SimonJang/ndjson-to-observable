@@ -4,7 +4,13 @@ const assert = require('node:assert/strict');
 const {Readable} = require('node:stream');
 const {ndjsonToObservable} = require('../lib');
 
+let verified = false;
+
 class DelayedDestroyReadable extends Readable {
+	constructor() {
+		super({emitClose: false});
+	}
+
 	_read() {
 		if (this.sent) {
 			return;
@@ -16,7 +22,16 @@ class DelayedDestroyReadable extends Readable {
 	}
 
 	_destroy(error, callback) {
-		setTimeout(() => callback(new Error('delayed close failed')), 25);
+		setTimeout(() => {
+			callback(new Error('delayed close failed'));
+			setImmediate(() => {
+				assert.equal(input.closed, true);
+				assert.equal(input.listenerCount('error'), 0);
+				assert.equal(input.listenerCount('end'), 0);
+				assert.equal(input.listenerCount('close'), 0);
+				verified = true;
+			});
+		}, 25);
 	}
 }
 
@@ -24,7 +39,6 @@ const input = new DelayedDestroyReadable();
 const observable = ndjsonToObservable(input);
 const events = [];
 let lateCompleted = false;
-let verified = false;
 
 observable.subscribe({
 	next(value) {
@@ -39,17 +53,8 @@ observable.subscribe({
 	}
 });
 
-input.once('close', () => {
-	setImmediate(() => {
-		assert.deepEqual(events, [['next', 1], ['complete']]);
-		assert.equal(lateCompleted, true);
-		assert.equal(input.listenerCount('error'), 0);
-		assert.equal(input.listenerCount('end'), 0);
-		assert.equal(input.listenerCount('close'), 0);
-		verified = true;
-	});
-});
-
 process.on('beforeExit', () => {
+	assert.deepEqual(events, [['next', 1], ['complete']]);
+	assert.equal(lateCompleted, true);
 	assert.equal(verified, true);
 });
