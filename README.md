@@ -45,6 +45,14 @@ Type: `stream.Readable`
 
 A readable stream containing one JSON value per line.
 
+## Migrating from 1.x
+
+Version 2 changes ownership and timing for the input stream:
+
+- The first subscription starts reading instead of adapter construction.
+- Later subscribers receive a retained completion or error synchronously.
+- Unsubscribing the final observer before termination destroys the input stream, so it cannot be reused or resumed by a later subscription.
+
 ## License
 
 MIT © [Simon Jang](https://github.com/SimonJang)

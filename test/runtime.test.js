@@ -28,6 +28,23 @@ const assertProcessFixture = filename => {
 	assert.equal(result.status, 0, [result.stdout, result.stderr].filter(Boolean).join('\n'));
 };
 
+test('does not read the source before the first subscription', async () => {
+	let reads = 0;
+	const input = new Readable({
+		read() {
+			reads++;
+			this.push('{"id":1}\n');
+			this.push(null);
+		}
+	});
+	const observable = ndjsonToObservable(input);
+
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(reads, 0);
+	assert.deepEqual(await collect(observable), [{id: 1}]);
+	assert.equal(reads, 1);
+});
+
 test('parses LF-delimited object records', async () => {
 	const input = Readable.from(['{"id":1}\n{"id":2}\n{"id":3}']);
 
@@ -42,6 +59,11 @@ test('supports a UTF-8 BOM, CRLF, surrounding whitespace, and blank lines', asyn
 	const input = Readable.from(['\uFEFF{"id":1}\r\n\r\n  {"id":2}  \r\n']);
 
 	assert.deepEqual(await collect(ndjsonToObservable(input)), [{id: 1}, {id: 2}]);
+});
+
+test('completes empty and blank-only sources without values', async () => {
+	assert.deepEqual(await collect(ndjsonToObservable(Readable.from([]))), []);
+	assert.deepEqual(await collect(ndjsonToObservable(Readable.from([' \t\r\n\n']))), []);
 });
 
 test('accepts every JSON value allowed in NDJSON records', async () => {
@@ -72,8 +94,32 @@ test('handles records and multibyte characters split across chunks', async () =>
 
 test('makes a malformed record terminal before later same-chunk records', async () => {
 	const input = Readable.from(['{"id":1}\nnot-json\nstill-not-json\n{"id":2}\n']);
+	const privateTransforms = [];
+	const destroyedStreams = new Set();
+	const trackDestroy = stream => {
+		const destroy = stream.destroy;
+		stream.destroy = function () {
+			destroyedStreams.add(stream);
+			return destroy.apply(this, arguments);
+		};
+	};
+	trackDestroy(input);
+	const sourcePipe = input.pipe;
+	input.pipe = function (destination) {
+		privateTransforms.push(destination);
+		trackDestroy(destination);
+		const transformPipe = destination.pipe;
+		destination.pipe = function (next) {
+			privateTransforms.push(next);
+			trackDestroy(next);
+			return transformPipe.apply(this, arguments);
+		};
+		return sourcePipe.apply(this, arguments);
+	};
 	const observable = ndjsonToObservable(input);
 	const events = [];
+	let firstError;
+	let destroyedAtError;
 
 	await new Promise(resolve => {
 		observable.subscribe({
@@ -81,6 +127,8 @@ test('makes a malformed record terminal before later same-chunk records', async 
 				events.push(['next', value]);
 			},
 			error(error) {
+				firstError = error;
+				destroyedAtError = [input, ...privateTransforms].map(stream => destroyedStreams.has(stream));
 				events.push(['error', error.name]);
 				resolve();
 			},
@@ -95,10 +143,34 @@ test('makes a malformed record terminal before later same-chunk records', async 
 		['next', {id: 1}],
 		['error', 'SyntaxError']
 	]);
+	assert.equal(privateTransforms.length, 2);
+	assert.deepEqual(destroyedAtError, [true, true, true]);
+	assert.doesNotThrow(() => {
+		for (const transform of privateTransforms) {
+			transform.emit('error', new Error('late transform failure'));
+		}
+	});
 
 	let lateError;
 	observable.subscribe({error: error => { lateError = error; }});
-	assert.equal(lateError.name, 'SyntaxError');
+	assert.equal(lateError, firstError);
+});
+
+test('rejects non-JSON Unicode whitespace as a malformed record', async () => {
+	const input = Readable.from(['1\n\uFEFF\n2\n']);
+	const values = [];
+	const terminal = new Promise((resolve, reject) => {
+		ndjsonToObservable(input).subscribe({
+			next(value) {
+				values.push(value);
+			},
+			error: reject,
+			complete: resolve
+		});
+	});
+
+	await assert.rejects(terminal, error => error instanceof SyntaxError);
+	assert.deepEqual(values, [1]);
 });
 
 test('makes parse failure terminal for simultaneous subscribers', async () => {
@@ -121,6 +193,10 @@ test('makes parse failure terminal for simultaneous subscribers', async () => {
 	await Promise.all([terminal(firstEvents), terminal(secondEvents)]);
 	assert.deepEqual(firstEvents, [['next', 1], ['error', 'SyntaxError']]);
 	assert.deepEqual(secondEvents, firstEvents);
+});
+
+test('does not treat a synchronous subscriber exception as an adapter failure', () => {
+	assertProcessFixture('subscriber-error.js');
 });
 
 test('forwards source stream errors through the observable error channel', async () => {
@@ -163,6 +239,36 @@ test('retains a source error that occurs before subscription without a process r
 	} finally {
 		process.removeListener('unhandledRejection', onUnhandled);
 	}
+});
+
+test('retains a pending source error when destroyed before construction', async () => {
+	const input = new PassThrough();
+	const failure = new Error('failed before construction');
+
+	input.once('error', () => {});
+	input.destroy(failure);
+	const observable = ndjsonToObservable(input);
+
+	await assert.rejects(collect(observable), error => error === failure);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('retains a pending destroy error before the first subscription', async () => {
+	const input = new PassThrough();
+	const failure = new Error('failed before first subscription');
+	const observable = ndjsonToObservable(input);
+
+	input.once('error', () => {});
+	input.destroy(failure);
+	await new Promise(resolve => setImmediate(resolve));
+
+	await assert.rejects(collect(observable), error => error === failure);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
 });
 
 test('errors current and late subscribers when the source closes prematurely', async () => {
@@ -212,6 +318,43 @@ test('retains a premature close that happens before subscription', async () => {
 	input.destroy();
 	await closed;
 	await assert.rejects(collect(observable), /closed before ending/i);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('retains a premature close that happened before observable construction', async () => {
+	const input = new PassThrough();
+	const closed = new Promise(resolve => input.once('close', resolve));
+
+	input.destroy();
+	await closed;
+
+	const observable = ndjsonToObservable(input);
+	await assert.rejects(collect(observable), /closed before ending/i);
+	assert.equal(input.listenerCount('error'), 0);
+	assert.equal(input.listenerCount('end'), 0);
+	assert.equal(input.listenerCount('close'), 0);
+});
+
+test('does not retain listeners when the source ended and closed before construction', async () => {
+	const input = Readable.from(['{"id":1}']);
+	await new Promise((resolve, reject) => {
+		const onError = error => {
+			input.removeListener('close', onClose);
+			reject(error);
+		};
+		const onClose = () => {
+			input.removeListener('error', onError);
+			resolve();
+		};
+
+		input.once('error', onError);
+		input.once('close', onClose);
+		input.resume();
+	});
+
+	assert.deepEqual(await collect(ndjsonToObservable(input)), []);
 	assert.equal(input.listenerCount('error'), 0);
 	assert.equal(input.listenerCount('end'), 0);
 	assert.equal(input.listenerCount('close'), 0);

@@ -37,8 +37,38 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Inspect package contents
-        run: npm pack --dry-run
+      - name: Test packed package
+        run: npm run test:package
+
+  peer-floor:
+    name: Peer floor (RxJS 6.5.3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Use npm 12.0.1
+        run: npm install --global npm@12.0.1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install RxJS peer floor
+        run: npm install --no-save --package-lock=false rxjs@6.5.3
+
+      - name: Verify RxJS peer floor
+        run: node -e "require('assert').strictEqual(require('rxjs/package.json').version, '6.5.3')"
+
+      - name: Run tests
+        run: npm test
 
   legacy-runtime:
     name: Legacy runtime (Node 8)

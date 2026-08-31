@@ -20,15 +20,39 @@ function releaseLateSourceError(this: Readable) {
  */
 export const ndjsonToObservable = <T = unknown>(stream: Readable): Observable<T> => {
 	const subject = new Subject<T>();
+	const readable = stream as Readable & {
+		errored?: Error | null;
+		_readableState?: {
+			closed?: boolean;
+			closeEmitted?: boolean;
+			endEmitted?: boolean;
+			errored?: Error | null;
+		};
+	};
 	let activeSubscribers = 0;
 	let started = false;
 	let stopped = false;
 	let sourceEnded = false;
 	let sourceClosed = false;
+	let sourceCloseFallback: ReturnType<typeof setImmediate> | undefined;
 	let withoutBOM: ReturnType<typeof stripBOM> | undefined;
 	let lines: ReturnType<typeof split> | undefined;
 
+	const clearSourceCloseFallback = () => {
+		if (sourceCloseFallback) {
+			clearImmediate(sourceCloseFallback);
+			sourceCloseFallback = undefined;
+		}
+	};
+
+	const getStoredSourceError = () => {
+		const readableState = readable._readableState;
+
+		return readable.errored || (readableState && readableState.errored);
+	};
+
 	const removeSourceGuard = () => {
+		clearSourceCloseFallback();
 		stream.removeListener('error', onSourceError);
 		stream.removeListener('error', absorbLateError);
 		stream.removeListener('end', onSourceEnd);
@@ -37,6 +61,7 @@ export const ndjsonToObservable = <T = unknown>(stream: Readable): Observable<T>
 	};
 
 	const guardTerminalSource = () => {
+		clearSourceCloseFallback();
 		stream.removeListener('error', onSourceError);
 		stream.removeListener('end', onSourceEnd);
 		stream.removeListener('close', onSourceClose);
@@ -98,18 +123,44 @@ export const ndjsonToObservable = <T = unknown>(stream: Readable): Observable<T>
 		subject.error(error);
 	};
 
-	const onSourceError = (error: Error) => fail(error);
+	const onSourceError = (error: Error) => {
+		clearSourceCloseFallback();
+		fail(error);
+	};
 	const onSourceEnd = () => {
 		sourceEnded = true;
+		clearSourceCloseFallback();
+	};
+	const failPendingSourceClose = () => {
+		sourceCloseFallback = undefined;
+
+		if (stopped || sourceEnded) {
+			return;
+		}
+
+		fail(getStoredSourceError() || new Error('Input stream closed before ending'));
+	};
+	const scheduleSourceCloseFallback = () => {
+		if (!sourceCloseFallback) {
+			sourceCloseFallback = setImmediate(failPendingSourceClose);
+		}
 	};
 	const onSourceClose = () => {
 		sourceClosed = true;
 
 		if (!stopped && !sourceEnded) {
-			fail(new Error('Input stream closed before ending'));
+			const sourceError = getStoredSourceError();
+
+			if (sourceError) {
+				fail(sourceError);
+			} else {
+				scheduleSourceCloseFallback();
+			}
 		}
 
-		removeSourceGuard();
+		if (stopped) {
+			removeSourceGuard();
+		}
 	};
 	const onTransformError = (error: Error) => fail(error);
 	const onEnd = () => {
@@ -123,15 +174,20 @@ export const ndjsonToObservable = <T = unknown>(stream: Readable): Observable<T>
 		subject.complete();
 	};
 	const onLine = (line: string) => {
-		if (stopped || line.trim() === '') {
+		if (stopped || /^[\t\n\r ]*$/.test(line)) {
 			return;
 		}
 
+		let value: T;
+
 		try {
-			subject.next(JSON.parse(line) as T);
+			value = JSON.parse(line) as T;
 		} catch (error) {
 			fail(error as Error);
+			return;
 		}
+
+		subject.next(value);
 	};
 
 	const start = () => {
@@ -149,6 +205,19 @@ export const ndjsonToObservable = <T = unknown>(stream: Readable): Observable<T>
 	stream.on('error', onSourceError);
 	stream.once('end', onSourceEnd);
 	stream.once('close', onSourceClose);
+
+	const readableState = readable._readableState;
+	sourceEnded = Boolean(readableState && readableState.endEmitted);
+	sourceClosed = Boolean(readableState && readableState.closeEmitted);
+	const storedSourceError = getStoredSourceError();
+
+	if (storedSourceError) {
+		onSourceError(storedSourceError);
+	} else if (sourceClosed && !sourceEnded) {
+		onSourceClose();
+	} else if (stream.destroyed && !sourceEnded) {
+		scheduleSourceCloseFallback();
+	}
 
 	return new Observable<T>(subscriber => {
 		activeSubscribers++;
