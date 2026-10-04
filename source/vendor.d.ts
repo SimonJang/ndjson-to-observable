@@ -10,3 +10,11 @@ declare module 'split' {
 
 	export = split;
 }
+
+declare module '@samverschueren/stream-to-observable' {
+	import { Stream } from 'stream';
+	import { Observable } from 'rxjs';
+
+	function streamToObservable<T>(stream: Stream): Observable<T>;
+	export = streamToObservable;
+}

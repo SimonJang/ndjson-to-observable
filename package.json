@@ -1,6 +1,6 @@
 {
 	"name": "ndjson-to-observable",
-	"version": "2.0.0",
+	"version": "1.1.0",
 	"description": "Create an observable stream from a ndjson stream",
 	"repository": "https://github.com/SimonJang/ndjson-to-observable",
 	"main": "lib/index.js",
@@ -10,7 +10,7 @@
 		"build": "npm run clean && tsc --project tsconfig.json",
 		"test": "npm run build && npm run test:runtime && npm run test:types",
 		"test:package": "npm run build && node test/package-smoke.js",
-		"test:runtime": "node --test test/runtime.test.js",
+		"test:runtime": "node --test test/runtime.test.js test/compatibility.test.js",
 		"test:types": "tsc --project tsconfig.test.json && node node_modules/typescript-3-7/lib/tsc.js --project tsconfig.legacy.json",
 		"prepack": "npm test",
 		"deploy": "npm run prepack && npx np"
@@ -34,11 +34,13 @@
 	},
 	"license": "MIT",
 	"dependencies": {
+		"@samverschueren/stream-to-observable": "^0.3.0",
 		"split": "^1.0.1",
 		"strip-bom-stream": "^4.0.0"
 	},
 	"devDependencies": {
 		"@types/node": "22.20.1",
+		"ndjson-to-observable-v1": "npm:ndjson-to-observable@1.1.0",
 		"rxjs": "6.6.7",
 		"types-node-8": "npm:@types/node@8.10.66",
 		"typescript": "7.0.2",
