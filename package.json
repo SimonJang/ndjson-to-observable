@@ -6,13 +6,14 @@
 	"main": "lib/index.js",
 	"types": "lib/index.d.ts",
 	"scripts": {
-		"lint": "tslint -p . --format stylish",
-		"format": "prettier --write \"source/**/*.ts\"",
-		"build": "npm run clean && tsc -p tsconfig.json",
-		"test": "npm run lint && npm run format && ava",
-		"clean": "del-cli lib",
-		"prepare": "npm run test && npm run build",
-		"deploy": "npm run prepare && npx np"
+		"clean": "node -e \"require('fs').rmSync('lib', {recursive: true, force: true})\"",
+		"build": "npm run clean && tsc --project tsconfig.json",
+		"test": "npm run build && npm run test:runtime && npm run test:types",
+		"test:package": "npm run build && node test/package-smoke.js",
+		"test:runtime": "node --test test/runtime.test.js test/compatibility.test.js",
+		"test:types": "tsc --project tsconfig.test.json && node node_modules/typescript-3-7/lib/tsc.js --project tsconfig.legacy.json",
+		"prepack": "npm test",
+		"deploy": "npm run prepack && npx np"
 	},
 	"engines": {
 		"node": ">=8"
@@ -38,31 +39,15 @@
 		"strip-bom-stream": "^4.0.0"
 	},
 	"devDependencies": {
-		"@types/node": "^9.6.55",
-		"ava": "^3.9.0",
-		"del-cli": "^0.2.1",
-		"prettier": "^1.19.1",
-		"rxjs": "^6.5.3",
-		"ts-node": "^8.5.2",
-		"tsd": "^0.11.0",
-		"tslint": "^5.20.1",
-		"tslint-config-prettier": "^1.18.0",
-		"tslint-xo": "^0.7.2",
-		"type-fest": "^0.8.0",
-		"typescript": "^3.7.2"
-	},
-	"ava": {
-		"files": [
-			"source/test/**/*"
-		],
-		"extensions": [
-			"ts"
-		],
-		"require": [
-			"ts-node/register"
-		]
+		"@types/node": "22.20.1",
+		"ndjson-to-observable-v1": "npm:ndjson-to-observable@1.1.0",
+		"rxjs": "6.6.7",
+		"types-node-8": "npm:@types/node@8.10.66",
+		"typescript": "7.0.2",
+		"typescript-3-7": "npm:typescript@3.7.5"
 	},
 	"peerDependencies": {
 		"rxjs": "^6.5.3"
-	}
+	},
+	"packageManager": "npm@12.0.1"
 }

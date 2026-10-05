@@ -1,24 +1,19 @@
 {
-    "compilerOptions": {
-        "target": "es2016",
-        "module": "commonjs",
-        "declaration": true,
-        "removeComments": true,
-        "pretty": true,
-        "allowUnreachableCode": false,
-        "allowUnusedLabels": false,
-        "noImplicitAny": false,
-        "noImplicitReturns": true,
-        "noImplicitUseStrict": false,
-        "noFallthroughCasesInSwitch": true,
-        "allowSyntheticDefaultImports": true,
-        "strictNullChecks": true,
+	"compilerOptions": {
+		"declaration": true,
+		"module": "node16",
+		"moduleResolution": "node16",
 		"outDir": "lib",
-		"strict": true
-    },
-    "exclude": [
-		"node_modules",
-		"source/test",
-    "lib"
+		"rootDir": "source",
+		"strict": true,
+		"target": "ES2017",
+		"types": ["node"]
+	},
+	"exclude": [
+		"source/test"
+	],
+	"include": [
+		"source/index.ts",
+		"source/vendor.d.ts"
 	]
 }
