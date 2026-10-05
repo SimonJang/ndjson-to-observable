@@ -6,10 +6,15 @@ interface RecordValue {
 	id: number;
 }
 
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
+	(<T>() => T extends B ? 1 : 2) ? true : false;
+type ObservableValue<T> = T extends Observable<infer Value> ? Value : never;
+
 declare const stream: Readable;
 
-const defaultResult: Observable<unknown> = ndjsonToObservable(stream);
+const defaultResult = ndjsonToObservable(stream);
+const defaultTypeIsUnknown: Equal<ObservableValue<typeof defaultResult>, unknown> = true;
 const typedResult: Observable<RecordValue> = ndjsonToObservable<RecordValue>(stream);
 
-void defaultResult;
+void defaultTypeIsUnknown;
 void typedResult;
